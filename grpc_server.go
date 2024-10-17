@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/v2/interceptors/recovery"
 	hclog "github.com/hashicorp/go-hclog"
@@ -79,19 +80,19 @@ func (s *GRPCServer) Init() error {
 		opts = append(opts, grpc.Creds(credentials.NewTLS(s.TLS)))
 	}
 
-	if s.PanicHandler != nil {
-		ropts := []recovery.Option{
-			recovery.WithRecoveryHandler(s.PanicHandler),
-		}
-		opts = append(opts,
-			grpc.UnaryInterceptor(
-				recovery.UnaryServerInterceptor(ropts...),
-			),
-			grpc.StreamInterceptor(
-				recovery.StreamServerInterceptor(ropts...),
-			),
-		)
+	ropts := []recovery.Option{
+		recovery.WithRecoveryHandler(func(p interface{}) (err error) {
+			return fmt.Errorf("Panic occured: %v\n%s", p, string(debug.Stack()))
+		}),
 	}
+	opts = append(opts,
+		grpc.UnaryInterceptor(
+			recovery.UnaryServerInterceptor(ropts...),
+		),
+		grpc.StreamInterceptor(
+			recovery.StreamServerInterceptor(ropts...),
+		),
+	)
 
 	s.server = s.Server(opts)
 
