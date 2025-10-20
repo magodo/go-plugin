@@ -1589,8 +1589,8 @@ func TestServerLogPanic(t *testing.T) {
 	panicFound := false
 	stackLines := 0
 
-	for _, line := range strings.Split(buffer.String(), "\n") {
-		if strings.Contains(line, "[ERROR] test-logger.go-plugin.test: panic: invalid foo bar") {
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if strings.Contains(line, "invalid foo bar") {
 			panicFound = true
 			continue
 		}
