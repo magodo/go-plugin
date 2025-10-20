@@ -10,16 +10,11 @@ import (
 	"fmt"
 	"os"
 	"os/user"
-	"runtime"
 	"syscall"
 	"testing"
 )
 
 func TestUnixSocketGroupPermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("go-plugin doesn't support unix sockets on Windows")
-	}
-
 	group, err := user.LookupGroupId(fmt.Sprintf("%d", os.Getgid()))
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +30,7 @@ func TestUnixSocketGroupPermissions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer ln.Close()
+			defer func() { _ = ln.Close() }()
 
 			info, err := os.Lstat(ln.Addr().String())
 			if err != nil {

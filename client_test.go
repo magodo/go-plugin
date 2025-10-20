@@ -72,7 +72,7 @@ func TestClient(t *testing.T) {
 func TestClient_killStart(t *testing.T) {
 	// Create a temporary dir to store the result file
 	td := t.TempDir()
-	defer os.RemoveAll(td)
+	defer func() { _ = os.RemoveAll(td) }()
 
 	// Start the client
 	path := filepath.Join(td, "booted")
@@ -281,7 +281,7 @@ func TestClient_grpc_servercrash(t *testing.T) {
 		t.Fatalf("bad: %#v", raw)
 	}
 
-	c.runner.Kill(context.Background())
+	_ = c.runner.Kill(context.Background())
 
 	select {
 	case <-c.doneCtx.Done():
@@ -668,7 +668,7 @@ func testClient_reattachGRPC(t *testing.T, useReattachFunc bool) {
 
 func TestClient_reattachNotFound(t *testing.T) {
 	// Find a bad pid
-	var pid int = 5000
+	pid := 5000
 	for i := pid; i < 32000; i++ {
 		if _, err := os.FindProcess(i); err != nil {
 			pid = i
@@ -682,7 +682,7 @@ func TestClient_reattachNotFound(t *testing.T) {
 		t.Fatalf("err: %s", err)
 	}
 	addr := l.Addr()
-	l.Close()
+	_ = l.Close()
 
 	// Reattach
 	c := NewClient(&ClientConfig{
@@ -884,8 +884,8 @@ func TestClient_Stdin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
-	defer os.Remove(tf.Name())
-	defer tf.Close()
+	defer func() { _ = os.Remove(tf.Name()) }()
+	defer func() { _ = tf.Close() }()
 
 	if _, err = tf.WriteString("hello"); err != nil {
 		t.Fatalf("error: %s", err)
@@ -916,11 +916,7 @@ func TestClient_Stdin(t *testing.T) {
 		t.Fatalf("error: %s", err)
 	}
 
-	for {
-		if c.Exited() {
-			break
-		}
-
+	for !c.Exited() {
 		time.Sleep(50 * time.Millisecond)
 	}
 
@@ -954,10 +950,7 @@ func TestClient_SkipHostEnv(t *testing.T) {
 				t.Fatalf("error: %s", err)
 			}
 
-			for {
-				if c.Exited() {
-					break
-				}
+			for !c.Exited() {
 
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -1023,7 +1016,7 @@ func TestClient_SecureConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	hash := sha256.New()
 
@@ -1072,7 +1065,7 @@ func TestClient_TLS(t *testing.T) {
 	}
 
 	// Grab the impl
-	raw, err := clientBad.Dispense("test")
+	_, err = clientBad.Dispense("test")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1101,7 +1094,7 @@ func TestClient_TLS(t *testing.T) {
 	}
 
 	// Grab the impl
-	raw, err = client.Dispense("test")
+	raw, err := client.Dispense("test")
 	if err != nil {
 		t.Fatalf("err should be nil, got %s", err)
 	}
@@ -1338,7 +1331,7 @@ func TestClient_versionedClient(t *testing.T) {
 		t.Fatalf("bad: %#v", raw)
 	}
 
-	c.runner.Kill(context.Background())
+	_ = c.runner.Kill(context.Background())
 
 	select {
 	case <-c.doneCtx.Done():
@@ -1394,7 +1387,7 @@ func TestClient_mtlsClient(t *testing.T) {
 		t.Fatal("invalid response", n)
 	}
 
-	c.runner.Kill(context.Background())
+	_ = c.runner.Kill(context.Background())
 
 	select {
 	case <-c.doneCtx.Done():
@@ -1440,7 +1433,7 @@ func TestClient_mtlsNetRPCClient(t *testing.T) {
 		t.Fatal("invalid response", n)
 	}
 
-	c.runner.Kill(context.Background())
+	_ = c.runner.Kill(context.Background())
 
 	select {
 	case <-c.doneCtx.Done():
@@ -1450,7 +1443,7 @@ func TestClient_mtlsNetRPCClient(t *testing.T) {
 }
 
 func TestClient_logger(t *testing.T) {
-	t.Run("net/rpc", func(t *testing.T) { testClient_logger(t, "netrpc") })
+	t.Run("netrpc", func(t *testing.T) { testClient_logger(t, "netrpc") })
 	t.Run("grpc", func(t *testing.T) { testClient_logger(t, "grpc") })
 }
 
@@ -1461,12 +1454,105 @@ func testClient_logger(t *testing.T, proto string) {
 	// Custom hclog.Logger
 	clientLogger := hclog.New(&hclog.LoggerOptions{
 		Name:   "test-logger",
-		Level:  hclog.Trace,
+		Level:  hclog.Debug,
 		Output: stderr,
 		Mutex:  mutex,
 	})
 
+	plugins := map[string]map[string]Plugin{
+		"netrpc": testPluginMap,
+		"grpc":   testGRPCPluginMap,
+	}
+
 	process := helperProcess("test-interface-logger-" + proto)
+	c := NewClient(&ClientConfig{
+		Cmd:              process,
+		HandshakeConfig:  testHandshake,
+		Plugins:          plugins[proto],
+		Logger:           clientLogger,
+		AllowedProtocols: []Protocol{ProtocolNetRPC, ProtocolGRPC},
+	})
+	defer c.Kill()
+
+	// Grab the RPC client
+	client, err := c.Client()
+	if err != nil {
+		t.Fatalf("err should be nil, got %s", err)
+	}
+
+	// Grab the impl
+	raw, err := client.Dispense("test")
+	if err != nil {
+		t.Fatalf("err should be nil, got %s", err)
+	}
+
+	impl, ok := raw.(testInterface)
+	if !ok {
+		t.Fatalf("bad: %#v", raw)
+	}
+
+	t.Run("-1", func(t *testing.T) {
+		// Discard everything else, and capture the output we care about
+		mutex.Lock()
+		buffer.Reset()
+		mutex.Unlock()
+		impl.PrintKV("foo", "bar")
+		time.Sleep(100 * time.Millisecond)
+		mutex.Lock()
+		line, err := buffer.ReadString('\n')
+		mutex.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(line, "foo=bar") {
+			t.Fatalf("bad: %q", line)
+		}
+	})
+
+	t.Run("-2", func(t *testing.T) {
+		// Try an integer type
+		mutex.Lock()
+		buffer.Reset()
+		mutex.Unlock()
+		impl.PrintKV("foo", 12)
+		time.Sleep(100 * time.Millisecond)
+		mutex.Lock()
+		line, err := buffer.ReadString('\n')
+		mutex.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(line, "foo=12") {
+			t.Fatalf("bad: %q", line)
+		}
+	})
+
+	// Kill it
+	c.Kill()
+
+	// Test that it knows it is exited
+	if !c.Exited() {
+		t.Fatal("should say client has exited")
+	}
+
+	if c.killed() {
+		t.Fatal("process failed to exit gracefully")
+	}
+}
+
+func TestServerLogPanic(t *testing.T) {
+	var buffer bytes.Buffer
+	mutex := new(sync.Mutex)
+	stderr := io.MultiWriter(os.Stderr, &buffer)
+	// Custom hclog.Logger
+	clientLogger := hclog.New(&hclog.LoggerOptions{
+		Name:   "test-logger",
+		Level:  hclog.Error,
+		Output: stderr,
+		Mutex:  mutex,
+	})
+
+	process := helperProcess("test-interface-logger-grpc")
 	c := NewClient(&ClientConfig{
 		Cmd:              process,
 		HandshakeConfig:  testHandshake,
@@ -1493,52 +1579,42 @@ func testClient_logger(t *testing.T, proto string) {
 		t.Fatalf("bad: %#v", raw)
 	}
 
-	{
-		// Discard everything else, and capture the output we care about
-		mutex.Lock()
-		buffer.Reset()
-		mutex.Unlock()
-		impl.PrintKV("foo", "bar")
-		time.Sleep(100 * time.Millisecond)
-		mutex.Lock()
-		line, err := buffer.ReadString('\n')
-		mutex.Unlock()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(line, "foo=bar") {
-			t.Fatalf("bad: %q", line)
-		}
-	}
+	mutex.Lock()
+	buffer.Reset()
+	mutex.Unlock()
+	err = impl.Panic("invalid foo bar")
+	time.Sleep(100 * time.Millisecond)
+	mutex.Lock()
 
-	{
-		// Try an integer type
-		mutex.Lock()
-		buffer.Reset()
-		mutex.Unlock()
-		impl.PrintKV("foo", 12)
-		time.Sleep(100 * time.Millisecond)
-		mutex.Lock()
-		line, err := buffer.ReadString('\n')
-		mutex.Unlock()
-		if err != nil {
-			t.Fatal(err)
+	panicFound := false
+	stackLines := 0
+
+	for _, line := range strings.Split(buffer.String(), "\n") {
+		if strings.Contains(line, "[ERROR] test-logger.go-plugin.test: panic: invalid foo bar") {
+			panicFound = true
+			continue
 		}
-		if !strings.Contains(line, "foo=12") {
-			t.Fatalf("bad: %q", line)
+
+		// make sure we are not just capturing the panic line, and have the rest
+		// of the output too
+		if panicFound {
+			// there should only be [ERROR] lines past this point, but the log
+			// level is Error, so we can just verify there are lines
+			stackLines++
 		}
 	}
 
-	// Kill it
-	c.Kill()
-
-	// Test that it knows it is exited
-	if !c.Exited() {
-		t.Fatal("should say client has exited")
+	if !panicFound {
+		t.Fatal("failed to find panic in error log output")
 	}
 
-	if c.killed() {
-		t.Fatal("process failed to exit gracefully")
+	if stackLines < 10 {
+		t.Fatalf("only found %d stack lines after panic", stackLines)
+	}
+
+	mutex.Unlock()
+	if err == nil {
+		t.Fatal("expected error due to panic")
 	}
 }
 

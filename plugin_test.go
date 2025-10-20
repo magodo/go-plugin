@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
@@ -44,6 +43,7 @@ type testInterface interface {
 	PrintKV(string, interface{})
 	Bidirectional() error
 	PrintStdio(stdout, stderr []byte)
+	Panic(msg string) error
 }
 
 // testStreamer is used to test the grpc streaming interface
@@ -141,14 +141,18 @@ func (i *testInterfaceImpl) Bidirectional() error {
 
 func (i *testInterfaceImpl) PrintStdio(stdout, stderr []byte) {
 	if len(stdout) > 0 {
-		fmt.Fprint(os.Stdout, string(stdout))
-		os.Stdout.Sync()
+		_, _ = fmt.Fprint(os.Stdout, string(stdout))
+		_ = os.Stdout.Sync()
 	}
 
 	if len(stderr) > 0 {
-		fmt.Fprint(os.Stderr, string(stderr))
-		os.Stderr.Sync()
+		_, _ = fmt.Fprint(os.Stderr, string(stderr))
+		_ = os.Stderr.Sync()
 	}
+}
+
+func (i *testInterfaceImpl) Panic(msg string) error {
+	panic(msg)
 }
 
 // testInterfaceClient implements testInterface to communicate over RPC
@@ -185,7 +189,10 @@ func (impl *testInterfaceClient) PrintStdio(stdout, stderr []byte) {
 	// way (see rpc_client_test.go). We probably should test this way
 	// but very few people use the net/rpc protocol nowadays so we didn'
 	// put in the effort.
-	return
+}
+
+func (impl *testInterfaceClient) Panic(msg string) error {
+	return nil
 }
 
 // testInterfaceServer is the RPC server for testInterfaceClient
@@ -216,6 +223,7 @@ var testGRPCPluginMap = map[string]Plugin{
 
 // testGRPCServer is the implementation of our GRPC service.
 type testGRPCServer struct {
+	grpctest.UnimplementedTestServer
 	Impl   testInterface
 	broker *GRPCBroker
 }
@@ -282,7 +290,14 @@ func (s *testGRPCServer) PrintStdio(
 	return &empty.Empty{}, nil
 }
 
-type pingPongServer struct{}
+func (s *testGRPCServer) Panic(ctx context.Context, req *grpctest.PanicRequest) (*empty.Empty, error) {
+	err := s.Impl.Panic(req.Message)
+	return &empty.Empty{}, err
+}
+
+type pingPongServer struct {
+	grpctest.UnimplementedPingPongServer
+}
 
 func (p *pingPongServer) Ping(ctx context.Context, req *grpctest.PingRequest) (*grpctest.PongResponse, error) {
 	return &grpctest.PongResponse{
@@ -304,8 +319,6 @@ func (s testGRPCServer) Stream(stream grpctest.Test_StreamServer) error {
 			return err
 		}
 	}
-
-	return nil
 }
 
 // testGRPCClient is an implementation of TestInterface that communicates
@@ -405,7 +418,7 @@ func (impl *testGRPCClient) Stream(start, stop int32) ([]int32, error) {
 		resp = append(resp, out.Output)
 	}
 
-	streamClient.CloseSend()
+	_ = streamClient.CloseSend()
 
 	return resp, nil
 }
@@ -418,6 +431,11 @@ func (c *testGRPCClient) PrintStdio(stdout, stderr []byte) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func (c *testGRPCClient) Panic(msg string) error {
+	_, err := c.Client.Panic(context.Background(), &grpctest.PanicRequest{Message: msg})
+	return err
 }
 
 func helperProcess(s ...string) *exec.Cmd {
@@ -482,7 +500,7 @@ func TestHelperProcess(*testing.T) {
 		// If we have an arg, we write there on start
 		if len(args) > 0 {
 			path := args[0]
-			err := ioutil.WriteFile(path, []byte("foo"), 0644)
+			err := os.WriteFile(path, []byte("foo"), 0644)
 			if err != nil {
 				panic(err)
 			}
@@ -500,20 +518,20 @@ func TestHelperProcess(*testing.T) {
 		os.Exit(1)
 	case "stderr":
 		fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
-		os.Stderr.WriteString("HELLO\n")
-		os.Stderr.WriteString("WORLD\n")
+		_, _ = os.Stderr.WriteString("HELLO\n")
+		_, _ = os.Stderr.WriteString("WORLD\n")
 	case "stderr-json":
 		// write values that might be JSON, but aren't KVs
-		fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
-		os.Stderr.WriteString("[\"HELLO\"]\n")
-		os.Stderr.WriteString("12345\n")
-		os.Stderr.WriteString("{\"a\":1}\n")
+		_, _ = fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
+		_, _ = os.Stderr.WriteString("[\"HELLO\"]\n")
+		_, _ = os.Stderr.WriteString("12345\n")
+		_, _ = os.Stderr.WriteString("{\"a\":1}\n")
 	case "level-warn-text":
 		// write values that might be JSON, but aren't KVs
-		fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
-		os.Stderr.WriteString("[WARN] test line 98765\n")
+		_, _ = fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
+		_, _ = os.Stderr.WriteString("[WARN] test line 98765\n")
 	case "stdin":
-		fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
+		_, _ = fmt.Printf("%d|%d|tcp|:1234\n", CoreProtocolVersion, testHandshake.ProtocolVersion)
 		data := make([]byte, 5)
 		if _, err := os.Stdin.Read(data); err != nil {
 			log.Printf("stdin read error: %s", err)
@@ -530,7 +548,7 @@ func TestHelperProcess(*testing.T) {
 		// up properly versus just calling os.Exit
 		path := args[0]
 		defer func() {
-			err := ioutil.WriteFile(path, []byte("foo"), 0644)
+			err := os.WriteFile(path, []byte("foo"), 0644)
 			if err != nil {
 				panic(err)
 			}
@@ -581,7 +599,7 @@ func TestHelperProcess(*testing.T) {
 	case "test-interface-logger-grpc":
 		Serve(&ServeConfig{
 			HandshakeConfig: testHandshake,
-			Plugins:         testPluginMap,
+			Plugins:         testGRPCPluginMap,
 			GRPCServer:      DefaultGRPCServer,
 		})
 		// Shouldn't reach here but make sure we exit anyways
@@ -728,7 +746,6 @@ func helperTLSProvider() (*tls.Config, error) {
 		ClientAuth:   tls.VerifyClientCertIfGiven,
 		ServerName:   "127.0.0.1",
 	}
-	tlsConfig.BuildNameToCertificate()
 
 	return tlsConfig, nil
 }
